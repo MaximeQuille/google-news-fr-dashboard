@@ -317,11 +317,8 @@ def main(test_requests_only: bool = False) -> None:
         candidates = [a for a in articles if (a.get('published') or '') > start]
         candidates = matching_articles(candidates, alert_filter, keywords)
         if candidates:
-            uid_list = ','.join(quote_value(a['uid']) for a in candidates if a.get('uid'))
-            delivered = set()
-            if uid_list:
-                delivered_rows = supa.get('/alert_deliveries?select=article_uid&filter_id=eq.' + quote_value(alert_filter['id']) + '&article_uid=in.(' + uid_list + ')')
-                delivered = {r['article_uid'] for r in delivered_rows}
+            delivered_rows = supa.get('/alert_deliveries?select=article_uid&filter_id=eq.' + quote_value(alert_filter['id']) + '&limit=20000')
+            delivered = {r['article_uid'] for r in delivered_rows}
             fresh = [a for a in candidates if a.get('uid') not in delivered][:80]
             if fresh:
                 send_message(build_email(alert_filter, fresh))
