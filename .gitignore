@@ -16,3 +16,6 @@ public/
 
 # Logs
 *.log
+
+# Local Mac launcher
+lancer_google_news_fr_ULTRA_MAC_sans_Vietnam.command
