@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -45,12 +46,19 @@ def headers(service_key: str, prefer: str | None = None) -> dict[str, str]:
 
 
 def request_json(method: str, url: str, service_key: str, **kwargs):
-    resp = requests.request(method, url, headers={**headers(service_key), **kwargs.pop("headers", {})}, timeout=120, **kwargs)
-    if resp.status_code >= 400:
-        raise SystemExit(f"Supabase error {resp.status_code}: {resp.text[:1000]}")
-    if resp.text:
-        return resp.json()
-    return None
+    last_error = ""
+    extra_headers = kwargs.pop("headers", {})
+    for attempt in range(4):
+        resp = requests.request(method, url, headers={**headers(service_key), **extra_headers}, timeout=120, **kwargs)
+        if resp.status_code < 400:
+            if resp.text:
+                return resp.json()
+            return None
+        last_error = f"Supabase error {resp.status_code}: {resp.text[:1000]}"
+        if resp.status_code not in {500, 502, 503, 504}:
+            break
+        time.sleep(2 * (attempt + 1))
+    raise SystemExit(last_error)
 
 
 def paged_get(base_url: str, service_key: str, table: str, select: str, order: str | None = None, page_size: int = 1000):
@@ -144,13 +152,13 @@ def push_articles(conn: sqlite3.Connection, supabase_url: str, service_key: str)
         item = {col: clean_value(row[idx]) for idx, col in enumerate(cols)}
         item["media_group"] = app.classify_media_group(item.get("source", ""), item.get("source_domain", ""))
         batch.append(item)
-        if len(batch) >= 500:
-            request_json("POST", url, service_key, data=json.dumps(batch), headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        if len(batch) >= 250:
+            request_json("POST", url, service_key, data=json.dumps(batch), headers={"Prefer": "resolution=ignore-duplicates,return=minimal"})
             total += len(batch)
             batch.clear()
             print(f"Pushed articles: {total}")
     if batch:
-        request_json("POST", url, service_key, data=json.dumps(batch), headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        request_json("POST", url, service_key, data=json.dumps(batch), headers={"Prefer": "resolution=ignore-duplicates,return=minimal"})
         total += len(batch)
     print(f"Pushed articles total: {total}")
 
