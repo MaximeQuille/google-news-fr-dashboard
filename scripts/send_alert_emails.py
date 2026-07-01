@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import html
 import json
 import os
@@ -231,7 +232,49 @@ def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: li
     return True
 
 
-def main() -> None:
+def fetch_active_filter_for_request(supa: Supabase, request: dict[str, Any]) -> dict[str, Any] | None:
+    rows = supa.get(
+        '/alert_filters?select=*&active=eq.true&id=eq.' + quote_value(str(request['filter_id']))
+        + '&manage_token=eq.' + quote_value(str(request['manage_token']))
+        + '&limit=1'
+    )
+    return rows[0] if rows else None
+
+
+def process_test_requests(supa: Supabase, now: str) -> int:
+    try:
+        requests_rows = supa.get('/alert_test_requests?select=id,filter_id,manage_token&processed_at=is.null&order=created_at.asc&limit=50')
+    except requests.HTTPError as exc:
+        body = exc.response.text if exc.response is not None else ''
+        if exc.response is not None and exc.response.status_code in {404, 400} and ('alert_test_requests' in body or '42P01' in body):
+            print('Table alert_test_requests manquante: lancez le SQL Supabase alertes mis à jour.')
+            return 0
+        raise
+    sent = 0
+    for request_row in requests_rows:
+        request_id = quote_value(str(request_row['id']))
+        try:
+            alert_filter = fetch_active_filter_for_request(supa, request_row)
+            if not alert_filter:
+                supa.patch('alert_test_requests', 'id=eq.' + request_id, {'processed_at': now, 'status': 'not_found'})
+                continue
+            if 'first_test_sent_at' not in alert_filter:
+                supa.patch('alert_test_requests', 'id=eq.' + request_id, {'processed_at': now, 'status': 'schema_missing', 'error': 'first_test_sent_at missing'})
+                continue
+            keywords = normalize_keywords(alert_filter.get('keywords'))
+            if not keywords or not alert_filter.get('email'):
+                supa.patch('alert_test_requests', 'id=eq.' + request_id, {'processed_at': now, 'status': 'invalid_filter'})
+                continue
+            if send_initial_test(supa, alert_filter, keywords, now):
+                sent += 1
+            supa.patch('alert_test_requests', 'id=eq.' + request_id, {'processed_at': now, 'status': 'sent'})
+        except Exception as exc:
+            supa.patch('alert_test_requests', 'id=eq.' + request_id, {'processed_at': now, 'status': 'error', 'error': str(exc)[:500]})
+            raise
+    return sent
+
+
+def main(test_requests_only: bool = False) -> None:
     if not smtp_ready():
         print('SMTP non configuré: étape alertes ignorée sans erreur.')
         return
@@ -244,6 +287,13 @@ def main() -> None:
             print('Tables alertes Supabase non créées: étape alertes ignorée sans erreur.')
             return
         raise
+    now = datetime.now(timezone.utc).isoformat()
+    requested_tests = process_test_requests(supa, now)
+    if test_requests_only:
+        print(f'Demandes de test traitées. Tests envoyés: {requested_tests}.')
+        return
+    if requested_tests:
+        filters = supa.get('/alert_filters?select=*&active=eq.true&order=created_at.asc')
     if not filters:
         print('Aucune alerte active.')
         return
@@ -253,9 +303,8 @@ def main() -> None:
     since_values = [f.get('last_checked_at') or f.get('created_at') for f in filters if f.get('last_checked_at') or f.get('created_at')]
     since = min(since_values) if since_values else datetime.now(timezone.utc).isoformat()
     articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(since) + '&order=published.asc&limit=8000')
-    now = datetime.now(timezone.utc).isoformat()
     sent_filters = 0
-    sent_tests = 0
+    sent_tests = requested_tests
     for alert_filter in filters:
         keywords = normalize_keywords(alert_filter.get('keywords'))
         if not keywords or not alert_filter.get('email'):
@@ -284,4 +333,7 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test-requests-only', action='store_true')
+    args = parser.parse_args()
+    main(test_requests_only=args.test_requests_only)

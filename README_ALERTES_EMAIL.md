@@ -41,3 +41,9 @@ Sans ces secrets, le workflow continue de fonctionner mais ignore simplement l'e
 5. Pour un nouveau filtre, il envoie une seule fois un mail de test avec les articles qui auraient correspondu sur la dernière heure disponible.
 6. Ensuite il envoie un email si de nouveaux articles correspondent.
 7. Il mémorise les articles envoyés pour éviter les doublons.
+
+## 4. Gestion depuis le dashboard
+
+Les alertes créées depuis le dashboard sont associées à un jeton privé stocké dans le navigateur. Le site peut donc afficher, demander un test et supprimer les alertes créées depuis ce même navigateur sans exposer les emails publiquement.
+
+Le bouton de test ajoute une demande traitée par un workflow dédié toutes les 5 minutes environ. GitHub Pages ne peut pas envoyer un email directement sans exposer les secrets SMTP.
