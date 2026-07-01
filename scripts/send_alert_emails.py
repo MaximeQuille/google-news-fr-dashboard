@@ -6,7 +6,7 @@ import json
 import os
 import smtplib
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any
 from urllib.parse import quote
@@ -115,17 +115,31 @@ def fmt_date(value: str | None) -> str:
     return value.replace('T', ' ')[:16]
 
 
-def build_email(alert_filter: dict[str, Any], rows: list[dict[str, Any]]) -> EmailMessage:
+def build_email(
+    alert_filter: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    subject: str | None = None,
+    intro: str = 'Articles détectés:',
+    empty_text: str = 'Aucun article correspondant sur cette période.',
+) -> EmailMessage:
     label = alert_filter.get('label') or 'Alerte Google News FR'
-    subject = f"{len(rows)} nouvel article{'s' if len(rows) > 1 else ''} - {label}"
+    if subject is None:
+        subject = f"{len(rows)} nouvel article{'s' if len(rows) > 1 else ''} - {label}"
     sender = env('SMTP_FROM') or env('SMTP_USERNAME')
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = sender
     msg['To'] = alert_filter['email']
 
-    lines = [subject, '', 'Articles détectés:']
+    lines = [subject, '', intro]
     html_rows = []
+    if not rows:
+        lines.extend(['', empty_text])
+        html_rows.append(f"""
+          <tr>
+            <td style="padding:18px;border-bottom:1px solid #e5e1d8;color:#4b463f;line-height:1.45">{html.escape(empty_text)}</td>
+          </tr>""")
     for article in rows:
         title = article.get('title') or 'Sans titre'
         source = article.get('source') or 'Source inconnue'
@@ -146,7 +160,7 @@ def build_email(alert_filter: dict[str, Any], rows: list[dict[str, Any]]) -> Ema
     <html><body style="margin:0;background:#f7f6f2;font-family:Arial,sans-serif;color:#171717">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f6f2;padding:24px">
         <tr><td align="center"><table role="presentation" width="680" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fff;border:1px solid #dedbd2;border-radius:8px;overflow:hidden">
-          <tr><td style="background:#20231f;color:#f8f6ef;padding:22px"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#c9c4b8">Google News FR</div><h1 style="margin:8px 0 0;font-size:24px">{html.escape(subject)}</h1></td></tr>
+          <tr><td style="background:#20231f;color:#f8f6ef;padding:22px"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#c9c4b8">Google News FR</div><h1 style="margin:8px 0 0;font-size:24px">{html.escape(subject)}</h1><p style="margin:10px 0 0;color:#d9d3c5;line-height:1.45">{html.escape(intro)}</p></td></tr>
           {''.join(html_rows)}
         </table></td></tr>
       </table>
@@ -175,6 +189,48 @@ def quote_value(value: str) -> str:
     return quote(value, safe='')
 
 
+def parse_supabase_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def iso_no_tz(value: datetime) -> str:
+    return value.replace(tzinfo=None).isoformat(timespec='seconds')
+
+
+def matching_articles(articles: list[dict[str, Any]], alert_filter: dict[str, Any], keywords: list[str]) -> list[dict[str, Any]]:
+    return [
+        article for article in articles
+        if scope_match(article, alert_filter.get('scope') or 'all')
+        and keyword_match(article, keywords, alert_filter.get('match_mode') or 'any')
+    ]
+
+
+def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: list[str], now: str) -> bool:
+    stats_rows = supa.get('/article_stats?select=last_article')
+    last_article = parse_supabase_time((stats_rows[0] if stats_rows else {}).get('last_article'))
+    if last_article is None:
+        supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'first_test_sent_at': now, 'last_checked_at': now})
+        return False
+    window_start = iso_no_tz(last_article - timedelta(hours=1))
+    test_articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(window_start) + '&order=published.desc&limit=8000')
+    rows = matching_articles(test_articles, alert_filter, keywords)[:80]
+    label = alert_filter.get('label') or 'Alerte Google News FR'
+    send_message(build_email(
+        alert_filter,
+        rows,
+        subject=f'Test filtre actif - {label}',
+        intro='Mail de validation: voici les articles qui auraient correspondu sur la dernière heure disponible de la base.',
+        empty_text='Le filtre est actif, mais aucun article ne correspondait sur la dernière heure disponible.',
+    ))
+    supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'first_test_sent_at': now, 'last_checked_at': now})
+    return True
+
+
 def main() -> None:
     if not smtp_ready():
         print('SMTP non configuré: étape alertes ignorée sans erreur.')
@@ -196,13 +252,19 @@ def main() -> None:
     articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(since) + '&order=published.asc&limit=8000')
     now = datetime.now(timezone.utc).isoformat()
     sent_filters = 0
+    sent_tests = 0
     for alert_filter in filters:
         keywords = normalize_keywords(alert_filter.get('keywords'))
         if not keywords or not alert_filter.get('email'):
             supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': now})
             continue
+        if not alert_filter.get('first_test_sent_at'):
+            if send_initial_test(supa, alert_filter, keywords, now):
+                sent_tests += 1
+            continue
         start = alert_filter.get('last_checked_at') or alert_filter.get('created_at') or since
-        candidates = [a for a in articles if (a.get('published') or '') > start and scope_match(a, alert_filter.get('scope') or 'all') and keyword_match(a, keywords, alert_filter.get('match_mode') or 'any')]
+        candidates = [a for a in articles if (a.get('published') or '') > start]
+        candidates = matching_articles(candidates, alert_filter, keywords)
         if candidates:
             uid_list = ','.join(quote_value(a['uid']) for a in candidates if a.get('uid'))
             delivered = set()
@@ -215,7 +277,7 @@ def main() -> None:
                 supa.post('alert_deliveries', [{'filter_id': alert_filter['id'], 'article_uid': a['uid']} for a in fresh if a.get('uid')])
                 sent_filters += 1
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': now})
-    print(f'Alertes traitées: {len(filters)}. Emails envoyés: {sent_filters}.')
+    print(f'Alertes traitées: {len(filters)}. Tests envoyés: {sent_tests}. Emails envoyés: {sent_filters}.')
 
 
 if __name__ == '__main__':

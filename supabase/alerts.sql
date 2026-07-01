@@ -15,6 +15,7 @@ create table if not exists public.alert_filters (
   scope text not null default 'all' check (scope in ('all', 'top_100', 'national', 'local')),
   active boolean not null default true,
   last_checked_at timestamp with time zone default now(),
+  first_test_sent_at timestamp with time zone,
   constraint alert_filters_email_shape check (email ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'),
   constraint alert_filters_keywords_array check (jsonb_typeof(keywords) = 'array'),
   constraint alert_filters_keywords_size check (jsonb_array_length(keywords) between 1 and 12)
@@ -26,6 +27,8 @@ create table if not exists public.alert_deliveries (
   sent_at timestamp with time zone default now(),
   primary key (filter_id, article_uid)
 );
+
+alter table public.alert_filters add column if not exists first_test_sent_at timestamp with time zone;
 
 create index if not exists idx_alert_filters_active on public.alert_filters(active, last_checked_at);
 create index if not exists idx_alert_deliveries_filter on public.alert_deliveries(filter_id, sent_at desc);

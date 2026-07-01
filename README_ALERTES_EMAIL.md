@@ -38,5 +38,6 @@ Sans ces secrets, le workflow continue de fonctionner mais ignore simplement l'e
 2. Le script collecte les nouveaux articles.
 3. La base Supabase est mise à jour.
 4. `scripts/send_alert_emails.py` cherche les filtres actifs.
-5. Il envoie un email si de nouveaux articles correspondent.
-6. Il mémorise les articles envoyés pour éviter les doublons.
+5. Pour un nouveau filtre, il envoie une seule fois un mail de test avec les articles qui auraient correspondu sur la dernière heure disponible.
+6. Ensuite il envoie un email si de nouveaux articles correspondent.
+7. Il mémorise les articles envoyés pour éviter les doublons.
