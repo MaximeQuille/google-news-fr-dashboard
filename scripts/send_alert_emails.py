@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -29,6 +30,7 @@ TOP_100_MEDIA_DOMAINS = {
 
 NATIONAL_GROUP = 'Presse nationale'
 LOCAL_GROUP = 'Presse locale et régionale'
+PARIS_TZ = ZoneInfo('Europe/Paris')
 
 
 def env(name: str, default: str = '') -> str:
@@ -190,7 +192,7 @@ def quote_value(value: str) -> str:
     return quote(value, safe='')
 
 
-def parse_supabase_time(value: str | None) -> datetime | None:
+def parse_iso_time(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
@@ -199,7 +201,25 @@ def parse_supabase_time(value: str | None) -> datetime | None:
         return None
 
 
-def iso_no_tz(value: datetime) -> str:
+def parse_article_time(value: str | None) -> datetime | None:
+    dt = parse_iso_time(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(PARIS_TZ).replace(tzinfo=None)
+    return dt
+
+
+def checkpoint_to_article_time(value: str | None) -> datetime | None:
+    dt = parse_iso_time(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PARIS_TZ).replace(tzinfo=None)
+
+
+def article_time_query(value: datetime) -> str:
     return value.replace(tzinfo=None).isoformat(timespec='seconds')
 
 
@@ -213,12 +233,18 @@ def matching_articles(articles: list[dict[str, Any]], alert_filter: dict[str, An
 
 def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: list[str], now: str) -> bool:
     stats_rows = supa.get('/article_stats?select=last_article')
-    last_article = parse_supabase_time((stats_rows[0] if stats_rows else {}).get('last_article'))
+    last_article = parse_article_time((stats_rows[0] if stats_rows else {}).get('last_article'))
     if last_article is None:
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'first_test_sent_at': now, 'last_checked_at': now})
         return False
-    window_start = iso_no_tz(last_article - timedelta(hours=1))
-    test_articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(window_start) + '&order=published.desc&limit=8000')
+    window_start = last_article - timedelta(hours=1)
+    test_articles = supa.get(
+        '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
+        + quote_value(article_time_query(window_start))
+        + '&published=lte.'
+        + quote_value(article_time_query(last_article))
+        + '&order=published.desc&limit=8000'
+    )
     rows = matching_articles(test_articles, alert_filter, keywords)[:80]
     label = alert_filter.get('label') or 'Alerte Google News FR'
     send_message(build_email(
@@ -286,7 +312,9 @@ def main(test_requests_only: bool = False) -> None:
             print('Tables alertes Supabase non créées: étape alertes ignorée sans erreur.')
             return
         raise
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    current_article_time = now_dt.astimezone(PARIS_TZ).replace(tzinfo=None)
     requested_tests = process_test_requests(supa, now)
     if test_requests_only:
         print(f'Demandes de test traitées. Tests envoyés: {requested_tests}.')
@@ -299,9 +327,20 @@ def main(test_requests_only: bool = False) -> None:
     if any('first_test_sent_at' not in f for f in filters):
         print('Colonne first_test_sent_at manquante: lancez le SQL Supabase alertes mis à jour.')
         return
-    since_values = [f.get('last_checked_at') or f.get('created_at') for f in filters if f.get('last_checked_at') or f.get('created_at')]
-    since = min(since_values) if since_values else datetime.now(timezone.utc).isoformat()
-    articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(since) + '&order=published.asc&limit=8000')
+    since_values = [
+        checkpoint_to_article_time(f.get('last_checked_at') or f.get('created_at'))
+        for f in filters
+        if f.get('last_checked_at') or f.get('created_at')
+    ]
+    since_values = [value for value in since_values if value is not None]
+    since = min(since_values) if since_values else current_article_time - timedelta(hours=1)
+    articles = supa.get(
+        '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
+        + quote_value(article_time_query(since))
+        + '&published=lte.'
+        + quote_value(article_time_query(current_article_time))
+        + '&order=published.asc&limit=8000'
+    )
     sent_filters = 0
     sent_tests = requested_tests
     for alert_filter in filters:
@@ -313,8 +352,12 @@ def main(test_requests_only: bool = False) -> None:
             if send_initial_test(supa, alert_filter, keywords, now):
                 sent_tests += 1
             continue
-        start = alert_filter.get('last_checked_at') or alert_filter.get('created_at') or since
-        candidates = [a for a in articles if (a.get('published') or '') > start]
+        start = checkpoint_to_article_time(alert_filter.get('last_checked_at') or alert_filter.get('created_at')) or since
+        candidates = [
+            a for a in articles
+            if (published_at := parse_article_time(a.get('published'))) is not None
+            and start < published_at <= current_article_time
+        ]
         candidates = matching_articles(candidates, alert_filter, keywords)
         if candidates:
             delivered_rows = supa.get('/alert_deliveries?select=article_uid&filter_id=eq.' + quote_value(alert_filter['id']) + '&limit=20000')
