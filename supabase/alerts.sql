@@ -194,6 +194,46 @@ drop policy if exists "Public create alert filters" on public.alert_filters;
 
 grant execute on function public.create_alert_filter(text, text, jsonb, text, text, text) to anon;
 grant execute on function public.list_alert_filters(text[]) to anon;
+
+drop function if exists public.list_public_alert_filters(text[]);
+create function public.list_public_alert_filters(p_manage_tokens text[])
+returns table (
+  id uuid,
+  created_at timestamp with time zone,
+  email_masked text,
+  label text,
+  keywords jsonb,
+  match_mode text,
+  scope text,
+  active boolean,
+  first_test_sent_at timestamp with time zone,
+  can_manage boolean
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    af.id,
+    af.created_at,
+    case
+      when position('@' in af.email) > 2 then left(af.email, 2) || '***@' || split_part(af.email, '@', 2)
+      else 'email masqué'
+    end as email_masked,
+    af.label,
+    af.keywords,
+    af.match_mode,
+    af.scope,
+    af.active,
+    af.first_test_sent_at,
+    (af.manage_token is not null and af.manage_token = any(coalesce(p_manage_tokens, array[]::text[]))) as can_manage
+  from public.alert_filters af
+  where af.active = true
+  order by af.created_at desc;
+$$;
+
+grant execute on function public.list_public_alert_filters(text[]) to anon;
+
 grant execute on function public.delete_alert_filter(uuid, text) to anon;
 grant execute on function public.request_alert_test(uuid, text) to anon;
 
