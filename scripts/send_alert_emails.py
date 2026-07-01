@@ -247,6 +247,9 @@ def main() -> None:
     if not filters:
         print('Aucune alerte active.')
         return
+    if any('first_test_sent_at' not in f for f in filters):
+        print('Colonne first_test_sent_at manquante: lancez le SQL Supabase alertes mis à jour.')
+        return
     since_values = [f.get('last_checked_at') or f.get('created_at') for f in filters if f.get('last_checked_at') or f.get('created_at')]
     since = min(since_values) if since_values else datetime.now(timezone.utc).isoformat()
     articles = supa.get('/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.' + quote_value(since) + '&order=published.asc&limit=8000')
