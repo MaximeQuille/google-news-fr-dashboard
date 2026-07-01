@@ -91,6 +91,7 @@ Ajoute :
 - `RESEND_API_KEY` : clé API Resend pour envoyer les emails.
 - `ALERT_CRON_SECRET` : long mot de passe aléatoire, identique à celui utilisé dans `supabase/schedule_alerts.sql`.
 - `ALERT_EMAIL_FROM` : expéditeur email, par exemple `Google News FR <alertes@ton-domaine.fr>`.
+- `SUPABASE_SERVICE_ROLE_KEY` : déjà présent normalement, il est aussi injecté dans la fonction Supabase.
 
 Les secrets déjà présents restent nécessaires :
 
