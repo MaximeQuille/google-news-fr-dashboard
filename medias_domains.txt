@@ -1,0 +1,8 @@
+# Ajoute ici tes médias à forcer, un domaine par ligne.
+# Plus tu ajoutes de domaines, plus le rappel longue traîne augmente.
+#
+# Exemples :
+# monpetitmedia.fr
+# journal-local.fr
+# actu-ma-ville.fr
+

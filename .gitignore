@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.google_news_fr_ultra_venv/
+
+# Local generated outputs
+sortie_google_news_fr_ULTRA_*/
+dashboard_google_news_data.js
+dashboard_google_news.html
+public/
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs
+*.log

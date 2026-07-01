@@ -1,0 +1,65 @@
+name: Update Google News dashboard hourly
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Décalé de début d'heure pour limiter les retards GitHub Actions.
+    - cron: "17 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: google-news-dashboard-hourly
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch previous public state
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+          mkdir -p sortie_google_news_fr_ULTRA_CLOUD
+          if git show origin/gh-pages:state/google_news_fr_ultra.sqlite > sortie_google_news_fr_ULTRA_CLOUD/google_news_fr_ultra.sqlite 2>/dev/null; then
+            echo "Previous SQLite state restored from gh-pages."
+          else
+            echo "No previous cloud SQLite state found. First run will create a fresh state."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Collect new Google News articles
+        run: |
+          python google_news_fr_ultra_sqlite.py             --days 2             --mode ultra             --concurrency 35             --progress-every 500             --no-summary-backfill
+
+      - name: Prepare static site
+        run: python scripts/prepare_github_pages.py
+
+      - name: Publish to gh-pages branch
+        run: |
+          cd public
+          git init
+          git checkout -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Update dashboard $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
