@@ -3,6 +3,14 @@
 
 create extension if not exists pgcrypto;
 
+-- Search acceleration for the public dashboard.
+create extension if not exists pg_trgm;
+create index if not exists idx_articles_title_trgm on public.articles using gin (title gin_trgm_ops);
+create index if not exists idx_articles_summary_trgm on public.articles using gin (summary gin_trgm_ops);
+create index if not exists idx_articles_source_trgm on public.articles using gin (source gin_trgm_ops);
+create index if not exists idx_articles_source_domain_trgm on public.articles using gin (source_domain gin_trgm_ops);
+create index if not exists idx_articles_media_group_trgm on public.articles using gin (media_group gin_trgm_ops);
+
 -- Email alert filters created from the public dashboard.
 create table if not exists public.alert_filters (
   id uuid primary key default gen_random_uuid(),
@@ -16,6 +24,10 @@ create table if not exists public.alert_filters (
   active boolean not null default true,
   last_checked_at timestamp with time zone default now(),
   first_test_sent_at timestamp with time zone,
+  schedule_type text not null default 'hourly' check (schedule_type in ('hourly', 'daily', 'weekly')),
+  schedule_hour integer not null default 8 check (schedule_hour between 0 and 23),
+  schedule_weekday integer not null default 0 check (schedule_weekday between 0 and 6),
+  last_schedule_checked_at timestamp with time zone,
   constraint alert_filters_email_shape check (email ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'),
   constraint alert_filters_keywords_array check (jsonb_typeof(keywords) = 'array'),
   constraint alert_filters_keywords_size check (jsonb_array_length(keywords) between 1 and 12)
@@ -32,6 +44,16 @@ alter table public.alert_filters add column if not exists first_test_sent_at tim
 alter table public.alert_filters add column if not exists last_email_sent_at timestamp with time zone;
 alter table public.alert_filters add column if not exists last_email_article_count integer not null default 0;
 alter table public.alert_filters add column if not exists last_email_kind text;
+alter table public.alert_filters add column if not exists schedule_type text not null default 'hourly';
+alter table public.alert_filters add column if not exists schedule_hour integer not null default 8;
+alter table public.alert_filters add column if not exists schedule_weekday integer not null default 0;
+alter table public.alert_filters add column if not exists last_schedule_checked_at timestamp with time zone;
+alter table public.alert_filters drop constraint if exists alert_filters_schedule_type_check;
+alter table public.alert_filters add constraint alert_filters_schedule_type_check check (schedule_type in ('hourly', 'daily', 'weekly'));
+alter table public.alert_filters drop constraint if exists alert_filters_schedule_hour_check;
+alter table public.alert_filters add constraint alert_filters_schedule_hour_check check (schedule_hour between 0 and 23);
+alter table public.alert_filters drop constraint if exists alert_filters_schedule_weekday_check;
+alter table public.alert_filters add constraint alert_filters_schedule_weekday_check check (schedule_weekday between 0 and 6);
 
 create index if not exists idx_alert_filters_active on public.alert_filters(active, last_checked_at);
 create index if not exists idx_alert_deliveries_filter on public.alert_deliveries(filter_id, sent_at desc);
@@ -77,13 +99,17 @@ alter table public.alert_test_requests enable row level security;
 grant select, insert, update, delete on public.alert_test_requests to service_role;
 
 drop function if exists public.create_alert_filter(text, text, jsonb, text, text, text);
+drop function if exists public.create_alert_filter(text, text, jsonb, text, text, text, text, integer, integer);
 create function public.create_alert_filter(
   p_label text,
   p_email text,
   p_keywords jsonb,
   p_match_mode text,
   p_scope text,
-  p_manage_token text
+  p_manage_token text,
+  p_schedule_type text default 'hourly',
+  p_schedule_hour integer default 8,
+  p_schedule_weekday integer default 0
 )
 returns table (
   id uuid,
@@ -94,7 +120,10 @@ returns table (
   match_mode text,
   scope text,
   active boolean,
-  first_test_sent_at timestamp with time zone
+  first_test_sent_at timestamp with time zone,
+  schedule_type text,
+  schedule_hour integer,
+  schedule_weekday integer
 )
 language plpgsql
 security definer
@@ -116,18 +145,27 @@ begin
   if p_scope not in ('all', 'top_100', 'national', 'local') then
     raise exception 'scope invalid';
   end if;
+  if coalesce(p_schedule_type, 'hourly') not in ('hourly', 'daily', 'weekly') then
+    raise exception 'schedule_type invalid';
+  end if;
+  if coalesce(p_schedule_hour, 8) < 0 or coalesce(p_schedule_hour, 8) > 23 then
+    raise exception 'schedule_hour invalid';
+  end if;
+  if coalesce(p_schedule_weekday, 0) < 0 or coalesce(p_schedule_weekday, 0) > 6 then
+    raise exception 'schedule_weekday invalid';
+  end if;
 
   return query
   with inserted as (
-    insert into public.alert_filters(email, label, keywords, match_mode, scope, active, manage_token, last_checked_at)
-    values (p_email, nullif(p_label, ''), p_keywords, p_match_mode, p_scope, true, p_manage_token, now())
-    returning alert_filters.id as filter_id, alert_filters.created_at, alert_filters.email, alert_filters.label, alert_filters.keywords, alert_filters.match_mode, alert_filters.scope, alert_filters.active, alert_filters.first_test_sent_at
+    insert into public.alert_filters(email, label, keywords, match_mode, scope, active, manage_token, last_checked_at, schedule_type, schedule_hour, schedule_weekday)
+    values (p_email, nullif(p_label, ''), p_keywords, p_match_mode, p_scope, true, p_manage_token, now(), coalesce(p_schedule_type, 'hourly'), coalesce(p_schedule_hour, 8), coalesce(p_schedule_weekday, 0))
+    returning alert_filters.id as filter_id, alert_filters.created_at, alert_filters.email, alert_filters.label, alert_filters.keywords, alert_filters.match_mode, alert_filters.scope, alert_filters.active, alert_filters.first_test_sent_at, alert_filters.schedule_type, alert_filters.schedule_hour, alert_filters.schedule_weekday
   ), request as (
     insert into public.alert_test_requests(filter_id, manage_token)
     select inserted.filter_id, p_manage_token from inserted
     returning 1
   )
-  select inserted.filter_id, inserted.created_at, inserted.email, inserted.label, inserted.keywords, inserted.match_mode, inserted.scope, inserted.active, inserted.first_test_sent_at
+  select inserted.filter_id, inserted.created_at, inserted.email, inserted.label, inserted.keywords, inserted.match_mode, inserted.scope, inserted.active, inserted.first_test_sent_at, inserted.schedule_type, inserted.schedule_hour, inserted.schedule_weekday
   from inserted;
 end;
 $$;
@@ -146,14 +184,18 @@ returns table (
   first_test_sent_at timestamp with time zone,
   last_email_sent_at timestamp with time zone,
   last_email_article_count integer,
-  last_email_kind text
+  last_email_kind text,
+  schedule_type text,
+  schedule_hour integer,
+  schedule_weekday integer
 )
 language sql
 security definer
 set search_path = public
 as $$
   select af.id, af.created_at, af.email, af.label, af.keywords, af.match_mode, af.scope, af.active, af.first_test_sent_at,
-         af.last_email_sent_at, coalesce(af.last_email_article_count, 0), af.last_email_kind
+         af.last_email_sent_at, coalesce(af.last_email_article_count, 0), af.last_email_kind,
+         af.schedule_type, af.schedule_hour, af.schedule_weekday
   from public.alert_filters af
   where af.active = true
     and af.manage_token is not null
@@ -199,7 +241,7 @@ $$;
 revoke insert on public.alert_filters from anon;
 drop policy if exists "Public create alert filters" on public.alert_filters;
 
-grant execute on function public.create_alert_filter(text, text, jsonb, text, text, text) to anon;
+grant execute on function public.create_alert_filter(text, text, jsonb, text, text, text, text, integer, integer) to anon;
 grant execute on function public.list_alert_filters(text[]) to anon;
 
 drop function if exists public.list_public_alert_filters(text[]);
@@ -217,6 +259,9 @@ returns table (
   last_email_sent_at timestamp with time zone,
   last_email_article_count integer,
   last_email_kind text,
+  schedule_type text,
+  schedule_hour integer,
+  schedule_weekday integer,
   can_manage boolean
 )
 language sql
@@ -239,6 +284,9 @@ as $$
     af.last_email_sent_at,
     coalesce(af.last_email_article_count, 0) as last_email_article_count,
     af.last_email_kind,
+    af.schedule_type,
+    af.schedule_hour,
+    af.schedule_weekday,
     (af.manage_token is not null and af.manage_token = any(coalesce(p_manage_tokens, array[]::text[]))) as can_manage
   from public.alert_filters af
   where af.active = true

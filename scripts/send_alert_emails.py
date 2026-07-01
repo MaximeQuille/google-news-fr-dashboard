@@ -58,6 +58,20 @@ class Supabase:
         res.raise_for_status()
         return res.json()
 
+    def get_all(self, path: str, page_size: int = 1000, max_rows: int = 100000) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        sep = '&' if '?' in path else '?'
+        while offset < max_rows:
+            batch = self.get(f'{path}{sep}limit={page_size}&offset={offset}')
+            if not batch:
+                break
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        return rows
+
     def patch(self, table: str, query: str, payload: dict[str, Any]) -> None:
         headers = {**self.headers, 'Prefer': 'return=minimal'}
         res = requests.patch(f'{self.url}/{table}?{query}', headers=headers, data=json.dumps(payload), timeout=60)
@@ -231,6 +245,50 @@ def matching_articles(articles: list[dict[str, Any]], alert_filter: dict[str, An
     ]
 
 
+def local_period_key(value: datetime, schedule_type: str) -> str:
+    local = value.astimezone(PARIS_TZ)
+    if schedule_type == 'weekly':
+        year, week, _ = local.isocalendar()
+        return f'{year}-W{week:02d}'
+    return local.strftime('%Y-%m-%d')
+
+
+def schedule_due(alert_filter: dict[str, Any], now_dt: datetime) -> bool:
+    schedule_type = alert_filter.get('schedule_type') or 'hourly'
+    if schedule_type == 'hourly':
+        return True
+    local_now = now_dt.astimezone(PARIS_TZ)
+    hour = int(alert_filter.get('schedule_hour') or 8)
+    if local_now.hour < hour:
+        return False
+    if schedule_type == 'weekly' and local_now.weekday() != int(alert_filter.get('schedule_weekday') or 0):
+        return False
+    last_checked = parse_iso_time(alert_filter.get('last_schedule_checked_at'))
+    if last_checked is None:
+        return True
+    return local_period_key(last_checked, schedule_type) != local_period_key(now_dt, schedule_type)
+
+
+def schedule_label(alert_filter: dict[str, Any]) -> str:
+    schedule_type = alert_filter.get('schedule_type') or 'hourly'
+    if schedule_type == 'daily':
+        return 'daily'
+    if schedule_type == 'weekly':
+        return 'weekly'
+    return 'hourly'
+
+
+def mark_schedule_checked(supa: Supabase, alert_filter: dict[str, Any], now: str) -> None:
+    try:
+        supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_schedule_checked_at': now})
+    except requests.HTTPError as exc:
+        body = exc.response.text if exc.response is not None else ''
+        if exc.response is not None and exc.response.status_code in {400, 404} and 'last_schedule_checked_at' in body:
+            print('Colonne last_schedule_checked_at manquante: lancez le SQL Supabase alertes mis à jour.')
+            return
+        raise
+
+
 def update_last_email(supa: Supabase, alert_filter: dict[str, Any], now: str, count: int, kind: str) -> None:
     try:
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {
@@ -345,20 +403,26 @@ def main(test_requests_only: bool = False) -> None:
     if any('first_test_sent_at' not in f for f in filters):
         print('Colonne first_test_sent_at manquante: lancez le SQL Supabase alertes mis à jour.')
         return
+    due_filters = [
+        f for f in filters
+        if f.get('first_test_sent_at') and schedule_due(f, now_dt)
+    ]
     since_values = [
         checkpoint_to_article_time(f.get('last_checked_at') or f.get('created_at'))
-        for f in filters
+        for f in due_filters
         if f.get('last_checked_at') or f.get('created_at')
     ]
     since_values = [value for value in since_values if value is not None]
     since = min(since_values) if since_values else current_article_time - timedelta(hours=1)
-    articles = supa.get(
-        '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
-        + quote_value(article_time_query(since))
-        + '&published=lte.'
-        + quote_value(article_time_query(current_article_time))
-        + '&order=published.asc&limit=8000'
-    )
+    articles = []
+    if due_filters:
+        articles = supa.get_all(
+            '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
+            + quote_value(article_time_query(since))
+            + '&published=lte.'
+            + quote_value(article_time_query(current_article_time))
+            + '&order=published.asc'
+        )
     sent_filters = 0
     sent_tests = requested_tests
     for alert_filter in filters:
@@ -369,6 +433,8 @@ def main(test_requests_only: bool = False) -> None:
         if not alert_filter.get('first_test_sent_at'):
             if send_initial_test(supa, alert_filter, keywords, now):
                 sent_tests += 1
+            continue
+        if not schedule_due(alert_filter, now_dt):
             continue
         start = checkpoint_to_article_time(alert_filter.get('last_checked_at') or alert_filter.get('created_at')) or since
         candidates = [
@@ -382,11 +448,14 @@ def main(test_requests_only: bool = False) -> None:
             delivered = {r['article_uid'] for r in delivered_rows}
             fresh = [a for a in candidates if a.get('uid') not in delivered][:80]
             if fresh:
+                kind = schedule_label(alert_filter)
                 send_message(build_email(alert_filter, fresh))
                 supa.post('alert_deliveries', [{'filter_id': alert_filter['id'], 'article_uid': a['uid']} for a in fresh if a.get('uid')])
-                update_last_email(supa, alert_filter, now, len(fresh), 'hourly')
+                update_last_email(supa, alert_filter, now, len(fresh), kind)
                 sent_filters += 1
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': now})
+        if (alert_filter.get('schedule_type') or 'hourly') != 'hourly':
+            mark_schedule_checked(supa, alert_filter, now)
     print(f'Alertes traitées: {len(filters)}. Tests envoyés: {sent_tests}. Emails envoyés: {sent_filters}.')
 
 
