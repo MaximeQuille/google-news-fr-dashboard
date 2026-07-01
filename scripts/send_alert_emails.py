@@ -275,7 +275,7 @@ def scheduled_window(alert_filter: dict[str, Any], now_dt: datetime) -> tuple[da
         end = end - timedelta(days=(end.weekday() - int(alert_filter.get('schedule_weekday') or 0)) % 7)
     if local_now < end:
         return None
-    last_checked = checkpoint_to_article_time(alert_filter.get('last_schedule_checked_at') or alert_filter.get('last_checked_at') or alert_filter.get('created_at'))
+    last_checked = checkpoint_to_article_time(alert_filter.get('last_checked_at') or alert_filter.get('created_at'))
     if last_checked and floor_hour(last_checked) >= end:
         return None
     default_delta = timedelta(days=7 if schedule_type == 'weekly' else 1)

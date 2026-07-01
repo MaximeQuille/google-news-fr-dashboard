@@ -1,0 +1,62 @@
+name: Deploy Supabase functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/functions/**"
+      - "supabase/config.toml"
+      - ".github/workflows/deploy-supabase-functions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+
+      - name: Check deployment secrets
+        id: config
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_CRON_SECRET: ${{ secrets.ALERT_CRON_SECRET }}
+        run: |
+          if [ -n "$SUPABASE_ACCESS_TOKEN" ] && [ -n "$RESEND_API_KEY" ] && [ -n "$ALERT_CRON_SECRET" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Supabase function deployment skipped: missing SUPABASE_ACCESS_TOKEN, RESEND_API_KEY, or ALERT_CRON_SECRET."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Supabase CLI
+        if: steps.config.outputs.deploy == 'true'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Set function secrets
+        if: steps.config.outputs.deploy == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_CRON_SECRET: ${{ secrets.ALERT_CRON_SECRET }}
+        run: |
+          supabase secrets set \
+            RESEND_API_KEY="${RESEND_API_KEY}" \
+            ALERT_EMAIL_FROM="${ALERT_EMAIL_FROM:-Google News FR <onboarding@resend.dev>}" \
+            ALERT_CRON_SECRET="${ALERT_CRON_SECRET}" \
+            --project-ref sopvxssamctizjbbtsrl
+
+      - name: Deploy process-alerts
+        if: steps.config.outputs.deploy == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions deploy process-alerts --project-ref sopvxssamctizjbbtsrl

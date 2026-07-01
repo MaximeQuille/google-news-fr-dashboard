@@ -49,16 +49,19 @@ jobs:
         run: |
           python scripts/supabase_sync.py push --db sortie_google_news_fr_ULTRA_CLOUD/google_news_fr_ultra.sqlite
 
-      - name: Send email alerts
+      - name: Trigger Supabase alert processor
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM: ${{ secrets.SMTP_FROM }}
-        run: python scripts/send_alert_emails.py
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          ALERT_CRON_SECRET: ${{ secrets.ALERT_CRON_SECRET }}
+        run: |
+          curl -fsS -X POST "${SUPABASE_URL%/}/functions/v1/process-alerts" \
+            -H "Content-Type: application/json" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "x-alert-cron-secret: ${ALERT_CRON_SECRET}" \
+            --data '{"action":"all"}'
 
       - name: Prepare Supabase static site
         env:

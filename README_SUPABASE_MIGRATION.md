@@ -76,3 +76,41 @@ git push
 Dans GitHub : `Actions` -> `Update Google News dashboard hourly` -> `Run workflow`.
 
 Si tout est vert, la mise à jour horaire tourne via Supabase et GitHub Pages ne contient plus la grosse base SQLite.
+
+## Migration des alertes vers Supabase
+
+Les alertes email ne dépendent plus d'un cron GitHub toutes les 5 minutes. La logique fiable est maintenant dans la Edge Function Supabase `process-alerts`.
+
+### Secrets à ajouter dans GitHub
+
+Dans GitHub : `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`.
+
+Ajoute :
+
+- `SUPABASE_ACCESS_TOKEN` : token personnel Supabase pour déployer la fonction.
+- `RESEND_API_KEY` : clé API Resend pour envoyer les emails.
+- `ALERT_CRON_SECRET` : long mot de passe aléatoire, identique à celui utilisé dans `supabase/schedule_alerts.sql`.
+- `ALERT_EMAIL_FROM` : expéditeur email, par exemple `Google News FR <alertes@ton-domaine.fr>`.
+
+Les secrets déjà présents restent nécessaires :
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+### Déploiement
+
+Après ajout des secrets, pousse le code sur GitHub ou lance manuellement :
+
+`Actions` -> `Deploy Supabase functions` -> `Run workflow`.
+
+### Cron Supabase
+
+Dans Supabase : `SQL Editor` -> `New query`.
+
+1. Ouvre `supabase/schedule_alerts.sql`.
+2. Remplace `YOUR_SUPABASE_ANON_KEY`.
+3. Remplace `CHANGE_ME_LONG_RANDOM_SECRET` par la même valeur que `ALERT_CRON_SECRET`.
+4. Clique `Run`.
+
+Supabase appellera ensuite la fonction toutes les 5 minutes. Les emails horaires restent envoyés sur des fenêtres propres et complètes, par exemple 14:00 -> 15:00, seulement quand les articles de cette période sont bien arrivés en base.
