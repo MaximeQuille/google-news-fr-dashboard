@@ -3,7 +3,6 @@ name: Update Google News dashboard hourly
 on:
   workflow_dispatch:
   schedule:
-    # Décalé de début d'heure pour limiter les retards GitHub Actions.
     - cron: "17 * * * *"
 
 permissions:
@@ -21,18 +20,6 @@ jobs:
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Fetch previous public state
-        run: |
-          git fetch origin gh-pages --depth=1 || true
-          mkdir -p sortie_google_news_fr_ULTRA_CLOUD
-          if git show origin/gh-pages:state/google_news_fr_ultra.sqlite > sortie_google_news_fr_ULTRA_CLOUD/google_news_fr_ultra.sqlite 2>/dev/null; then
-            echo "Previous SQLite state restored from gh-pages."
-          else
-            echo "No previous cloud SQLite state found. First run will create a fresh state."
-          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,12 +31,29 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Restore SQLite state from Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python scripts/supabase_sync.py pull --db sortie_google_news_fr_ULTRA_CLOUD/google_news_fr_ultra.sqlite
+
       - name: Collect new Google News articles
         run: |
           python google_news_fr_ultra_sqlite.py             --days 2             --mode ultra             --concurrency 35             --progress-every 500             --no-summary-backfill
 
-      - name: Prepare static site
-        run: python scripts/prepare_github_pages.py
+      - name: Push updated state to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python scripts/supabase_sync.py push --db sortie_google_news_fr_ULTRA_CLOUD/google_news_fr_ultra.sqlite
+
+      - name: Prepare Supabase static site
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: python scripts/prepare_supabase_pages.py
 
       - name: Publish to gh-pages branch
         run: |
