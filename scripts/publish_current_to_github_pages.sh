@@ -11,7 +11,7 @@ REPO="$1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-python scripts/prepare_github_pages.py
+python3 scripts/prepare_github_pages.py
 
 cd public
 git init
