@@ -237,6 +237,60 @@ def article_time_query(value: datetime) -> str:
     return value.replace(tzinfo=None).isoformat(timespec='seconds')
 
 
+def floor_hour(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
+def ceil_hour(value: datetime) -> datetime:
+    floored = floor_hour(value)
+    return floored if value == floored else floored + timedelta(hours=1)
+
+
+def completed_hour_end(now_dt: datetime) -> datetime:
+    return floor_hour(now_dt.astimezone(PARIS_TZ).replace(tzinfo=None))
+
+
+def hourly_window(alert_filter: dict[str, Any], now_dt: datetime) -> tuple[datetime, datetime] | None:
+    end = completed_hour_end(now_dt)
+    checkpoint = checkpoint_to_article_time(alert_filter.get('last_checked_at') or alert_filter.get('created_at'))
+    if checkpoint is None:
+        start = end - timedelta(hours=1)
+    elif alert_filter.get('last_email_kind') in {'hourly', 'daily', 'weekly'}:
+        start = floor_hour(checkpoint)
+    else:
+        start = ceil_hour(checkpoint)
+    if start >= end:
+        return None
+    return start, end
+
+
+def scheduled_window(alert_filter: dict[str, Any], now_dt: datetime) -> tuple[datetime, datetime] | None:
+    schedule_type = alert_filter.get('schedule_type') or 'hourly'
+    if schedule_type == 'hourly':
+        return hourly_window(alert_filter, now_dt)
+    local_now = now_dt.astimezone(PARIS_TZ).replace(tzinfo=None)
+    hour = int(alert_filter.get('schedule_hour') or 8)
+    end = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if schedule_type == 'weekly':
+        end = end - timedelta(days=(end.weekday() - int(alert_filter.get('schedule_weekday') or 0)) % 7)
+    if local_now < end:
+        return None
+    last_checked = checkpoint_to_article_time(alert_filter.get('last_schedule_checked_at') or alert_filter.get('last_checked_at') or alert_filter.get('created_at'))
+    if last_checked and floor_hour(last_checked) >= end:
+        return None
+    default_delta = timedelta(days=7 if schedule_type == 'weekly' else 1)
+    start = last_checked if last_checked and last_checked < end else end - default_delta
+    if start >= end:
+        return None
+    return start, end
+
+
+def window_label(start: datetime, end: datetime) -> str:
+    if start.date() == end.date():
+        return f'{start:%d/%m/%Y %H:%M} - {end:%H:%M}'
+    return f'{start:%d/%m/%Y %H:%M} - {end:%d/%m/%Y %H:%M}'
+
+
 def matching_articles(articles: list[dict[str, Any]], alert_filter: dict[str, Any], keywords: list[str]) -> list[dict[str, Any]]:
     return [
         article for article in articles
@@ -403,24 +457,21 @@ def main(test_requests_only: bool = False) -> None:
     if any('first_test_sent_at' not in f for f in filters):
         print('Colonne first_test_sent_at manquante: lancez le SQL Supabase alertes mis à jour.')
         return
-    due_filters = [
-        f for f in filters
+    windows = {
+        f['id']: scheduled_window(f, now_dt)
+        for f in filters
         if f.get('first_test_sent_at') and schedule_due(f, now_dt)
-    ]
-    since_values = [
-        checkpoint_to_article_time(f.get('last_checked_at') or f.get('created_at'))
-        for f in due_filters
-        if f.get('last_checked_at') or f.get('created_at')
-    ]
-    since_values = [value for value in since_values if value is not None]
-    since = min(since_values) if since_values else current_article_time - timedelta(hours=1)
+    }
+    due_windows = [w for w in windows.values() if w is not None]
+    since = min((w[0] for w in due_windows), default=current_article_time - timedelta(hours=1))
+    until = max((w[1] for w in due_windows), default=current_article_time)
     articles = []
-    if due_filters:
+    if due_windows:
         articles = supa.get_all(
             '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
             + quote_value(article_time_query(since))
             + '&published=lte.'
-            + quote_value(article_time_query(current_article_time))
+            + quote_value(article_time_query(until))
             + '&order=published.asc'
         )
     sent_filters = 0
@@ -434,13 +485,14 @@ def main(test_requests_only: bool = False) -> None:
             if send_initial_test(supa, alert_filter, keywords, now):
                 sent_tests += 1
             continue
-        if not schedule_due(alert_filter, now_dt):
+        window = windows.get(alert_filter['id'])
+        if window is None:
             continue
-        start = checkpoint_to_article_time(alert_filter.get('last_checked_at') or alert_filter.get('created_at')) or since
+        start, end = window
         candidates = [
             a for a in articles
             if (published_at := parse_article_time(a.get('published'))) is not None
-            and start < published_at <= current_article_time
+            and start < published_at <= end
         ]
         candidates = matching_articles(candidates, alert_filter, keywords)
         if candidates:
@@ -449,11 +501,18 @@ def main(test_requests_only: bool = False) -> None:
             fresh = [a for a in candidates if a.get('uid') not in delivered][:80]
             if fresh:
                 kind = schedule_label(alert_filter)
-                send_message(build_email(alert_filter, fresh))
+                label = window_label(start, end)
+                subject_label = alert_filter.get('label') or 'Alerte Google News FR'
+                send_message(build_email(
+                    alert_filter,
+                    fresh,
+                    subject=f"{len(fresh)} nouvel article{'s' if len(fresh) > 1 else ''} - {subject_label} - {label}",
+                    intro=f'Articles détectés sur la fenêtre complète: {label}',
+                ))
                 supa.post('alert_deliveries', [{'filter_id': alert_filter['id'], 'article_uid': a['uid']} for a in fresh if a.get('uid')])
                 update_last_email(supa, alert_filter, now, len(fresh), kind)
                 sent_filters += 1
-        supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': now})
+        supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': end.replace(tzinfo=PARIS_TZ).astimezone(timezone.utc).isoformat()})
         if (alert_filter.get('schedule_type') or 'hourly') != 'hourly':
             mark_schedule_checked(supa, alert_filter, now)
     print(f'Alertes traitées: {len(filters)}. Tests envoyés: {sent_tests}. Emails envoyés: {sent_filters}.')
