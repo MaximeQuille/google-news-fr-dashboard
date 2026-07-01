@@ -58,11 +58,11 @@ class Supabase:
         res.raise_for_status()
         return res.json()
 
-    def get_all(self, path: str, page_size: int = 1000, max_rows: int = 100000) -> list[dict[str, Any]]:
+    def get_all(self, path: str, page_size: int = 1000) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         offset = 0
         sep = '&' if '?' in path else '?'
-        while offset < max_rows:
+        while True:
             batch = self.get(f'{path}{sep}limit={page_size}&offset={offset}')
             if not batch:
                 break
@@ -367,14 +367,14 @@ def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: li
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'first_test_sent_at': now, 'last_checked_at': now})
         return False
     window_start = last_article - timedelta(hours=1)
-    test_articles = supa.get(
+    test_articles = supa.get_all(
         '/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.'
         + quote_value(article_time_query(window_start))
         + '&published=lte.'
         + quote_value(article_time_query(last_article))
-        + '&order=published.desc&limit=8000'
+        + '&order=published.desc'
     )
-    rows = matching_articles(test_articles, alert_filter, keywords)[:80]
+    rows = matching_articles(test_articles, alert_filter, keywords)
     label = alert_filter.get('label') or 'Alerte Google News FR'
     send_message(build_email(
         alert_filter,
@@ -496,9 +496,9 @@ def main(test_requests_only: bool = False) -> None:
         ]
         candidates = matching_articles(candidates, alert_filter, keywords)
         if candidates:
-            delivered_rows = supa.get('/alert_deliveries?select=article_uid&filter_id=eq.' + quote_value(alert_filter['id']) + '&limit=20000')
+            delivered_rows = supa.get_all('/alert_deliveries?select=article_uid&filter_id=eq.' + quote_value(alert_filter['id']))
             delivered = {r['article_uid'] for r in delivered_rows}
-            fresh = [a for a in candidates if a.get('uid') not in delivered][:80]
+            fresh = [a for a in candidates if a.get('uid') not in delivered]
             if fresh:
                 kind = schedule_label(alert_filter)
                 label = window_label(start, end)
