@@ -231,6 +231,23 @@ def matching_articles(articles: list[dict[str, Any]], alert_filter: dict[str, An
     ]
 
 
+def update_last_email(supa: Supabase, alert_filter: dict[str, Any], now: str, count: int, kind: str) -> None:
+    try:
+        supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {
+            'last_email_sent_at': now,
+            'last_email_article_count': count,
+            'last_email_kind': kind,
+        })
+    except requests.HTTPError as exc:
+        body = exc.response.text if exc.response is not None else ''
+        if exc.response is not None and exc.response.status_code in {400, 404} and (
+            'last_email_sent_at' in body or 'last_email_article_count' in body or 'last_email_kind' in body
+        ):
+            print('Colonnes last_email_* manquantes: lancez le SQL Supabase alertes mis à jour.')
+            return
+        raise
+
+
 def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: list[str], now: str) -> bool:
     stats_rows = supa.get('/article_stats?select=last_article')
     last_article = parse_article_time((stats_rows[0] if stats_rows else {}).get('last_article'))
@@ -255,6 +272,7 @@ def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: li
         empty_text='Le filtre est actif, mais aucun article ne correspondait sur la dernière heure disponible.',
     ))
     supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'first_test_sent_at': now, 'last_checked_at': now})
+    update_last_email(supa, alert_filter, now, len(rows), 'test')
     return True
 
 
@@ -366,6 +384,7 @@ def main(test_requests_only: bool = False) -> None:
             if fresh:
                 send_message(build_email(alert_filter, fresh))
                 supa.post('alert_deliveries', [{'filter_id': alert_filter['id'], 'article_uid': a['uid']} for a in fresh if a.get('uid')])
+                update_last_email(supa, alert_filter, now, len(fresh), 'hourly')
                 sent_filters += 1
         supa.patch('alert_filters', 'id=eq.' + quote_value(alert_filter['id']), {'last_checked_at': now})
     print(f'Alertes traitées: {len(filters)}. Tests envoyés: {sent_tests}. Emails envoyés: {sent_filters}.')

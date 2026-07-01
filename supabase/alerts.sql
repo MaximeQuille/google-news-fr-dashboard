@@ -29,6 +29,9 @@ create table if not exists public.alert_deliveries (
 );
 
 alter table public.alert_filters add column if not exists first_test_sent_at timestamp with time zone;
+alter table public.alert_filters add column if not exists last_email_sent_at timestamp with time zone;
+alter table public.alert_filters add column if not exists last_email_article_count integer not null default 0;
+alter table public.alert_filters add column if not exists last_email_kind text;
 
 create index if not exists idx_alert_filters_active on public.alert_filters(active, last_checked_at);
 create index if not exists idx_alert_deliveries_filter on public.alert_deliveries(filter_id, sent_at desc);
@@ -140,13 +143,17 @@ returns table (
   match_mode text,
   scope text,
   active boolean,
-  first_test_sent_at timestamp with time zone
+  first_test_sent_at timestamp with time zone,
+  last_email_sent_at timestamp with time zone,
+  last_email_article_count integer,
+  last_email_kind text
 )
 language sql
 security definer
 set search_path = public
 as $$
-  select af.id, af.created_at, af.email, af.label, af.keywords, af.match_mode, af.scope, af.active, af.first_test_sent_at
+  select af.id, af.created_at, af.email, af.label, af.keywords, af.match_mode, af.scope, af.active, af.first_test_sent_at,
+         af.last_email_sent_at, coalesce(af.last_email_article_count, 0), af.last_email_kind
   from public.alert_filters af
   where af.active = true
     and af.manage_token is not null
@@ -207,6 +214,9 @@ returns table (
   scope text,
   active boolean,
   first_test_sent_at timestamp with time zone,
+  last_email_sent_at timestamp with time zone,
+  last_email_article_count integer,
+  last_email_kind text,
   can_manage boolean
 )
 language sql
@@ -226,6 +236,9 @@ as $$
     af.scope,
     af.active,
     af.first_test_sent_at,
+    af.last_email_sent_at,
+    coalesce(af.last_email_article_count, 0) as last_email_article_count,
+    af.last_email_kind,
     (af.manage_token is not null and af.manage_token = any(coalesce(p_manage_tokens, array[]::text[]))) as can_manage
   from public.alert_filters af
   where af.active = true
