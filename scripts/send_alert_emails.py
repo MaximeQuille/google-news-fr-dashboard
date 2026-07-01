@@ -180,7 +180,14 @@ def main() -> None:
         print('SMTP non configuré: étape alertes ignorée sans erreur.')
         return
     supa = Supabase()
-    filters = supa.get('/alert_filters?select=*&active=eq.true&order=created_at.asc')
+    try:
+        filters = supa.get('/alert_filters?select=*&active=eq.true&order=created_at.asc')
+    except requests.HTTPError as exc:
+        body = exc.response.text if exc.response is not None else ''
+        if exc.response is not None and exc.response.status_code in {404, 400} and ('alert_filters' in body or '42P01' in body):
+            print('Tables alertes Supabase non créées: étape alertes ignorée sans erreur.')
+            return
+        raise
     if not filters:
         print('Aucune alerte active.')
         return
