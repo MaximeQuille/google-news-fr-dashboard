@@ -237,3 +237,40 @@ grant execute on function public.list_public_alert_filters(text[]) to anon;
 grant execute on function public.delete_alert_filter(uuid, text) to anon;
 grant execute on function public.request_alert_test(uuid, text) to anon;
 
+drop function if exists public.delete_alert_filter_public(uuid);
+create function public.delete_alert_filter_public(p_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count integer;
+begin
+  delete from public.alert_filters
+  where id = p_id;
+  get diagnostics deleted_count = row_count;
+  return deleted_count > 0;
+end;
+$$;
+
+drop function if exists public.request_alert_test_public(uuid);
+create function public.request_alert_test_public(p_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.alert_test_requests(filter_id, manage_token)
+  select af.id, coalesce(af.manage_token, '')
+  from public.alert_filters af
+  where af.id = p_id and af.active = true;
+  return found;
+end;
+$$;
+
+grant execute on function public.delete_alert_filter_public(uuid) to anon;
+grant execute on function public.request_alert_test_public(uuid) to anon;
+
+

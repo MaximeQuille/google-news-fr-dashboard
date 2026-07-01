@@ -235,7 +235,6 @@ def send_initial_test(supa: Supabase, alert_filter: dict[str, Any], keywords: li
 def fetch_active_filter_for_request(supa: Supabase, request: dict[str, Any]) -> dict[str, Any] | None:
     rows = supa.get(
         '/alert_filters?select=*&active=eq.true&id=eq.' + quote_value(str(request['filter_id']))
-        + '&manage_token=eq.' + quote_value(str(request['manage_token']))
         + '&limit=1'
     )
     return rows[0] if rows else None
