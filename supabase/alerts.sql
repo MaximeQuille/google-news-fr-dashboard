@@ -24,7 +24,7 @@ create table if not exists public.alert_filters (
   active boolean not null default true,
   last_checked_at timestamp with time zone default now(),
   first_test_sent_at timestamp with time zone,
-  schedule_type text not null default 'hourly' check (schedule_type in ('hourly', 'daily', 'weekly')),
+  schedule_type text not null default 'hourly' check (schedule_type in ('hourly', 'minute', 'daily', 'weekly')),
   schedule_hour integer not null default 8 check (schedule_hour between 0 and 23),
   schedule_weekday integer not null default 0 check (schedule_weekday between 0 and 6),
   last_schedule_checked_at timestamp with time zone,
@@ -49,7 +49,7 @@ alter table public.alert_filters add column if not exists schedule_hour integer 
 alter table public.alert_filters add column if not exists schedule_weekday integer not null default 0;
 alter table public.alert_filters add column if not exists last_schedule_checked_at timestamp with time zone;
 alter table public.alert_filters drop constraint if exists alert_filters_schedule_type_check;
-alter table public.alert_filters add constraint alert_filters_schedule_type_check check (schedule_type in ('hourly', 'daily', 'weekly'));
+alter table public.alert_filters add constraint alert_filters_schedule_type_check check (schedule_type in ('hourly', 'minute', 'daily', 'weekly'));
 alter table public.alert_filters drop constraint if exists alert_filters_schedule_hour_check;
 alter table public.alert_filters add constraint alert_filters_schedule_hour_check check (schedule_hour between 0 and 23);
 alter table public.alert_filters drop constraint if exists alert_filters_schedule_weekday_check;
@@ -145,7 +145,7 @@ begin
   if p_scope not in ('all', 'top_100', 'national', 'local') then
     raise exception 'scope invalid';
   end if;
-  if coalesce(p_schedule_type, 'hourly') not in ('hourly', 'daily', 'weekly') then
+  if coalesce(p_schedule_type, 'hourly') not in ('hourly', 'minute', 'daily', 'weekly') then
     raise exception 'schedule_type invalid';
   end if;
   if coalesce(p_schedule_hour, 8) < 0 or coalesce(p_schedule_hour, 8) > 23 then
@@ -333,5 +333,4 @@ $$;
 
 grant execute on function public.delete_alert_filter_public(uuid) to anon;
 grant execute on function public.request_alert_test_public(uuid) to anon;
-
 

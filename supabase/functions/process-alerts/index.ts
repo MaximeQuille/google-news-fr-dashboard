@@ -258,8 +258,14 @@ function hourlyWindow(filter: AlertFilter, now: Date): [string, string] | null {
   return start < end ? [start, end] : null;
 }
 
+function minuteWindow(now: Date): [string, string] {
+  const end = floorHour(parisLocal(now));
+  return [addLocal(end, -1, "hour"), end];
+}
+
 function scheduledWindow(filter: AlertFilter, now: Date): [string, string] | null {
   const scheduleType = filter.schedule_type || "hourly";
+  if (scheduleType === "minute") return minuteWindow(now);
   if (scheduleType === "hourly") return hourlyWindow(filter, now);
   const localNow = parisLocal(now);
   const hour = Number(filter.schedule_hour ?? 8);
@@ -290,7 +296,7 @@ function periodKey(value: string, scheduleType: string): string {
 
 function scheduleDue(filter: AlertFilter, now: Date): boolean {
   const scheduleType = filter.schedule_type || "hourly";
-  if (scheduleType === "hourly") return true;
+  if (scheduleType === "minute" || scheduleType === "hourly") return true;
   const localNow = parisLocal(now);
   const hour = Number(filter.schedule_hour ?? 8);
   if (localHour(localNow) < hour) return false;
@@ -450,11 +456,6 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
   if (!windows.length) return { filters: filters.length, emails: 0, skipped: "no_due_window" };
   const since = windows.reduce((min, w) => w[0] < min ? w[0] : min, windows[0][0]);
   const until = windows.reduce((max, w) => w[1] > max ? w[1] : max, windows[0][1]);
-  const stats = await restGet<Array<{ last_article?: string | null }>>("/article_stats?select=last_article");
-  const lastArticle = articleLocal(stats[0]?.last_article || null);
-  if (lastArticle && lastArticle < until) {
-    return { filters: filters.length, emails: 0, skipped: "articles_not_ready", until, last_article: lastArticle };
-  }
   const articles = await restGetAll<Article>(
     `/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.${q(since)}&published=lte.${q(until)}&order=published.asc`
   );
@@ -476,24 +477,27 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
       filter,
       keywords
     );
-    if (candidates.length) {
-      const deliveredRows = await restGetAll<{ article_uid: string }>(`/alert_deliveries?select=article_uid&filter_id=eq.${q(filter.id)}`);
+    const repeatEveryMinute = (filter.schedule_type || "hourly") === "minute";
+    if (candidates.length || repeatEveryMinute) {
+      const deliveredRows = repeatEveryMinute ? [] : await restGetAll<{ article_uid: string }>(`/alert_deliveries?select=article_uid&filter_id=eq.${q(filter.id)}`);
       const delivered = new Set(deliveredRows.map((row) => row.article_uid));
-      const fresh = candidates.filter((article) => article.uid && !delivered.has(article.uid));
-      if (fresh.length) {
+      const fresh = repeatEveryMinute ? candidates : candidates.filter((article) => article.uid && !delivered.has(article.uid));
+      if (fresh.length || repeatEveryMinute) {
         const kind = filter.schedule_type || "hourly";
         const label = windowLabel(start, end);
         const subjectLabel = filter.label || "Alerte Google News FR";
         const subject = `${fresh.length} nouvel article${fresh.length > 1 ? "s" : ""} - ${subjectLabel} - ${label}`;
         const email = buildEmail(filter, fresh, subject, `Articles détectés sur la fenêtre complète: ${label}`, "Aucun article correspondant sur cette période.");
         await sendEmail(filter.email, subject, email.text, email.html);
-        await restPost("alert_deliveries", fresh.filter((a) => a.uid).map((a) => ({ filter_id: filter.id, article_uid: a.uid as string })));
+        if (!repeatEveryMinute) {
+          await restPost("alert_deliveries", fresh.filter((a) => a.uid).map((a) => ({ filter_id: filter.id, article_uid: a.uid as string })));
+        }
         await updateLastEmail(filter, nowIso, fresh.length, kind);
         emails += 1;
       }
     }
     await restPatch("alert_filters", `id=eq.${q(filter.id)}`, { last_checked_at: localToUtcIso(end) });
-    if ((filter.schedule_type || "hourly") !== "hourly") {
+    if (!["hourly", "minute"].includes(filter.schedule_type || "hourly")) {
       await restPatch("alert_filters", `id=eq.${q(filter.id)}`, { last_schedule_checked_at: nowIso });
     }
   }

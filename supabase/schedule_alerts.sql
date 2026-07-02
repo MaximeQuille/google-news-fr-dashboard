@@ -16,21 +16,22 @@ select vault.create_secret('CHANGE_ME_LONG_RANDOM_SECRET', 'google_news_alert_cr
 do $$
 begin
   perform cron.unschedule('google-news-process-alerts-every-5-minutes');
+  perform cron.unschedule('google-news-process-alerts-every-minute');
 exception when others then
   null;
 end $$;
 
 select cron.schedule(
-  'google-news-process-alerts-every-5-minutes',
-  '*/5 * * * *',
+  'google-news-process-alerts-every-minute',
+  '* * * * *',
   $$
   select net.http_post(
-    url := (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_project_url') || '/functions/v1/process-alerts',
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_project_url' order by created_at desc limit 1) || '/functions/v1/process-alerts',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_publishable_key'),
-      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_publishable_key'),
-      'x-alert-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_alert_cron_secret')
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_publishable_key' order by created_at desc limit 1),
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_publishable_key' order by created_at desc limit 1),
+      'x-alert-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'google_news_alert_cron_secret' order by created_at desc limit 1)
     ),
     body := jsonb_build_object('action', 'all')
   ) as request_id;
