@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -142,9 +143,28 @@ def clean_value(value):
     return "" if value is None else value
 
 
-def push_articles(conn: sqlite3.Connection, supabase_url: str, service_key: str):
+def recent_cutoff(hours: int) -> str | None:
+    if hours <= 0:
+        return None
+    return (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def push_articles(conn: sqlite3.Connection, supabase_url: str, service_key: str, recent_hours: int = 0):
     cols = ARTICLE_COLUMNS
-    rows_iter = conn.execute(f"SELECT {','.join(cols)} FROM articles ORDER BY published DESC")
+    cutoff = recent_cutoff(recent_hours)
+    if cutoff:
+        rows_iter = conn.execute(
+            f"""
+            SELECT {','.join(cols)}
+            FROM articles
+            WHERE published >= ? OR created_at >= ?
+            ORDER BY published DESC
+            """,
+            (cutoff, cutoff),
+        )
+        print(f"Pushing recent articles only: last {recent_hours} hours")
+    else:
+        rows_iter = conn.execute(f"SELECT {','.join(cols)} FROM articles ORDER BY published DESC")
     total = 0
     batch = []
     url = f"{supabase_url}/rest/v1/articles?on_conflict=uid"
@@ -214,8 +234,9 @@ def update_dashboard_stats(conn: sqlite3.Connection, supabase_url: str, service_
 def push(db_path: Path):
     supabase_url = env("SUPABASE_URL")
     service_key = env("SUPABASE_SERVICE_ROLE_KEY")
+    recent_hours = int(os.environ.get("SUPABASE_PUSH_RECENT_HOURS", "72") or "0")
     conn = app.init_db(db_path)
-    push_articles(conn, supabase_url, service_key)
+    push_articles(conn, supabase_url, service_key, recent_hours=recent_hours)
     push_attempts(conn, supabase_url, service_key)
     update_dashboard_stats(conn, supabase_url, service_key)
     conn.close()
