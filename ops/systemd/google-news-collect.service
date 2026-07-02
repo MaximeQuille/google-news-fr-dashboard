@@ -1,0 +1,16 @@
+[Unit]
+Description=Google News FR hourly collector
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=google-news
+Group=google-news
+EnvironmentFile=/opt/google-news-fr/.env
+WorkingDirectory=/opt/google-news-fr/app
+ExecStart=/opt/google-news-fr/app/ops/vps/run_hourly.sh
+TimeoutStartSec=3300
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

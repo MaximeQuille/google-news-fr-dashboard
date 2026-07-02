@@ -7,7 +7,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -218,6 +218,7 @@ def update_dashboard_stats(conn: sqlite3.Connection, supabase_url: str, service_
         "total_sources": int(total_sources or 0),
         "first_article": first_article,
         "last_article": last_article,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }]
     url = f"{supabase_url}/rest/v1/dashboard_stats?on_conflict=id"
     try:

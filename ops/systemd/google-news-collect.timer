@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Google News FR collector every hour
+
+[Timer]
+OnCalendar=*:07:00
+Persistent=true
+RandomizedDelaySec=90
+Unit=google-news-collect.service
+
+[Install]
+WantedBy=timers.target

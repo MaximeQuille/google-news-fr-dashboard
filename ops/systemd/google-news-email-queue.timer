@@ -1,0 +1,11 @@
+[Unit]
+Description=Send queued Google News FR emails every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=30
+Unit=google-news-email-queue.service
+
+[Install]
+WantedBy=timers.target

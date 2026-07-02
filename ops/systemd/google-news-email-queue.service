@@ -1,0 +1,14 @@
+[Unit]
+Description=Google News FR queued Gmail sender
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=google-news
+Group=google-news
+EnvironmentFile=/opt/google-news-fr/.env
+WorkingDirectory=/opt/google-news-fr/app
+ExecStart=/opt/google-news-fr/app/ops/vps/send_queue.sh
+TimeoutStartSec=600
+Nice=5
