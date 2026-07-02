@@ -397,16 +397,23 @@ async function updateLastEmail(filter: AlertFilter, nowIso: string, count: numbe
   });
 }
 
+function testWindow(filter: AlertFilter, lastArticle: string): [string, string, string] {
+  const scheduleType = filter.schedule_type || "hourly";
+  if (scheduleType === "weekly") return [addLocal(lastArticle, -7, "day"), lastArticle, "les 7 derniers jours disponibles de la base"];
+  if (scheduleType === "daily") return [addLocal(lastArticle, -1, "day"), lastArticle, "les 24 dernières heures disponibles de la base"];
+  return [addLocal(lastArticle, -1, "hour"), lastArticle, "la dernière heure disponible de la base"];
+}
+
 async function sendInitialTest(filter: AlertFilter, keywords: string[], nowIso: string): Promise<boolean> {
-  const stats = await restGet<Array<{ last_article?: string | null }>>("/article_stats?select=last_article");
-  const lastArticle = articleLocal(stats[0]?.last_article || null);
+  const lastRows = await restGet<Array<{ published?: string | null }>>("/articles?select=published&order=published.desc&limit=1");
+  const lastArticle = articleLocal(lastRows[0]?.published || null);
   if (!lastArticle) {
     await restPatch("alert_filters", `id=eq.${q(filter.id)}`, { first_test_sent_at: nowIso, last_checked_at: nowIso });
     return false;
   }
-  const windowStart = addLocal(lastArticle, -1, "hour");
+  const [windowStart, windowEnd, periodLabel] = testWindow(filter, lastArticle);
   const articles = await restGetAll<Article>(
-    `/articles?select=uid,published,source,source_domain,media_group,title,summary,canonical_title,link,first_query_kind,first_query_label,first_query_day,all_query_labels&published=gt.${q(windowStart)}&published=lte.${q(lastArticle)}&order=published.desc`
+    `/articles?select=uid,published,source,source_domain,media_group,title,summary,canonical_title,link,first_query_kind,first_query_label,first_query_day,all_query_labels&published=gt.${q(windowStart)}&published=lte.${q(windowEnd)}&order=published.desc`
   );
   const rows = matchingArticles(articles, filter, keywords);
   const label = filter.label || "Alerte Google News FR";
@@ -415,8 +422,8 @@ async function sendInitialTest(filter: AlertFilter, keywords: string[], nowIso: 
     filter,
     rows,
     subject,
-    "Mail de validation: voici les articles qui auraient correspondu sur la dernière heure disponible de la base.",
-    "Le filtre est actif, mais aucun article ne correspondait sur la dernière heure disponible."
+    `Mail de validation: voici les articles qui auraient correspondu sur ${periodLabel}.`,
+    `Le filtre est actif, mais aucun article ne correspondait sur ${periodLabel}.`
   );
   await sendEmail(filter.email, subject, email.text, email.html);
   await restPatch("alert_filters", `id=eq.${q(filter.id)}`, { first_test_sent_at: nowIso, last_checked_at: nowIso });
@@ -484,7 +491,19 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
     `/articles?select=uid,published,source,source_domain,media_group,title,summary,canonical_title,link,first_query_kind,first_query_label,first_query_day,all_query_labels&published=gt.${q(since)}&published=lte.${q(until)}&order=published.asc`
   );
   if (!articles.length) {
-    return { filters: filters.length, emails: 0, skipped: "no_articles_in_due_windows", window_start: since, window_end: until };
+    let emptyMinuteEmails = 0;
+    for (const filter of filters) {
+      if ((filter.schedule_type || "hourly") !== "minute" || !due.has(filter.id)) continue;
+      const [start, end] = due.get(filter.id) as [string, string];
+      const label = windowLabel(start, end);
+      const subjectLabel = filter.label || "Alerte Google News FR";
+      const subject = `0 nouvel article - ${subjectLabel} - ${label}`;
+      const email = buildEmail(filter, [], subject, `Récap minute sur la fenêtre complète: ${label}`, "Aucun article correspondant sur cette période.");
+      await sendEmail(filter.email, subject, email.text, email.html);
+      await updateLastEmail(filter, nowIso, 0, "minute");
+      emptyMinuteEmails += 1;
+    }
+    return { filters: filters.length, emails: emptyMinuteEmails, skipped: "no_articles_in_due_windows", window_start: since, window_end: until };
   }
   let emails = 0;
   for (const filter of filters) {
