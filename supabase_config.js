@@ -1,0 +1,1 @@
+window.SUPABASE_CONFIG = {"url": "https://sopvxssamctizjbbtsrl.supabase.co", "anonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNvcHZ4c3NhbWN0aXpqYmJ0c3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MDE1ODgsImV4cCI6MjA5ODQ3NzU4OH0.ShOR5Aknvdvp3caNQ5fyWR_DY7gAL4SwRabP7785AW4"};

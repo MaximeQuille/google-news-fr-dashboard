@@ -1,0 +1,7 @@
+{
+  "generated_at_utc": "2026-07-02T17:05:39Z",
+  "backend": "supabase",
+  "features": [
+    "alerts"
+  ]
+}
