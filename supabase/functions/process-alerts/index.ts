@@ -26,6 +26,11 @@ type Article = {
   media_group?: string | null;
   title?: string | null;
   summary?: string | null;
+  canonical_title?: string | null;
+  first_query_kind?: string | null;
+  first_query_label?: string | null;
+  first_query_day?: string | null;
+  all_query_labels?: string | null;
   link?: string | null;
 };
 
@@ -222,11 +227,30 @@ function normalizeKeywords(value: unknown): string[] {
     }
   }
   if (!Array.isArray(value)) return [];
-  return value.map((x) => String(x).trim().toLowerCase()).filter(Boolean).slice(0, 12);
+  return value.map((x) => normalizeText(String(x).trim())).filter(Boolean).slice(0, 12);
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function articleText(article: Article): string {
-  return `${article.title || ""} ${article.summary || ""}`.toLowerCase();
+  return normalizeText([
+    article.title,
+    article.summary,
+    article.canonical_title,
+    article.source,
+    article.source_domain,
+    article.media_group,
+    article.first_query_kind,
+    article.first_query_label,
+    article.first_query_day,
+    article.all_query_labels,
+    article.link,
+  ].filter(Boolean).join(" "));
 }
 
 function scopeMatch(article: Article, scope: string): boolean {
@@ -382,7 +406,7 @@ async function sendInitialTest(filter: AlertFilter, keywords: string[], nowIso: 
   }
   const windowStart = addLocal(lastArticle, -1, "hour");
   const articles = await restGetAll<Article>(
-    `/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.${q(windowStart)}&published=lte.${q(lastArticle)}&order=published.desc`
+    `/articles?select=uid,published,source,source_domain,media_group,title,summary,canonical_title,link,first_query_kind,first_query_label,first_query_day,all_query_labels&published=gt.${q(windowStart)}&published=lte.${q(lastArticle)}&order=published.desc`
   );
   const rows = matchingArticles(articles, filter, keywords);
   const label = filter.label || "Alerte Google News FR";
@@ -457,8 +481,11 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
   const since = windows.reduce((min, w) => w[0] < min ? w[0] : min, windows[0][0]);
   const until = windows.reduce((max, w) => w[1] > max ? w[1] : max, windows[0][1]);
   const articles = await restGetAll<Article>(
-    `/articles?select=uid,published,source,source_domain,media_group,title,summary,link&published=gt.${q(since)}&published=lte.${q(until)}&order=published.asc`
+    `/articles?select=uid,published,source,source_domain,media_group,title,summary,canonical_title,link,first_query_kind,first_query_label,first_query_day,all_query_labels&published=gt.${q(since)}&published=lte.${q(until)}&order=published.asc`
   );
+  if (!articles.length) {
+    return { filters: filters.length, emails: 0, skipped: "no_articles_in_due_windows", window_start: since, window_end: until };
+  }
   let emails = 0;
   for (const filter of filters) {
     const keywords = normalizeKeywords(filter.keywords);
