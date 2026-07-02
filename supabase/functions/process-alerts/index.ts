@@ -64,6 +64,7 @@ const SERVICE_KEY =
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") || "";
 const ALERT_EMAIL_FROM = Deno.env.get("ALERT_EMAIL_FROM") || "Google News FR <onboarding@resend.dev>";
 const ALERT_CRON_SECRET = Deno.env.get("ALERT_CRON_SECRET") || "";
+const ALERT_EMAIL_DELIVERY = Deno.env.get("ALERT_EMAIL_DELIVERY") || "queue";
 const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
 function jsonResponse(body: Json, status = 200): Response {
@@ -77,7 +78,7 @@ function requireConfig() {
   const missing = [];
   if (!SUPABASE_URL) missing.push("SUPABASE_URL");
   if (!SERVICE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-  if (!RESEND_API_KEY) missing.push("RESEND_API_KEY");
+  if (ALERT_EMAIL_DELIVERY === "resend" && !RESEND_API_KEY) missing.push("RESEND_API_KEY");
   if (missing.length) throw new Error(`Configuration manquante: ${missing.join(", ")}`);
 }
 
@@ -128,6 +129,16 @@ async function restPost(table: string, rows: Json[]): Promise<void> {
   const res = await fetch(`${REST_URL}/${table}`, {
     method: "POST",
     headers: restHeaders({ Prefer: "resolution=ignore-duplicates,return=minimal" }),
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function restPostMerge(table: string, rows: Json[]): Promise<void> {
+  if (!rows.length) return;
+  const res = await fetch(`${REST_URL}/${table}`, {
+    method: "POST",
+    headers: restHeaders({ Prefer: "return=minimal" }),
     body: JSON.stringify(rows),
   });
   if (!res.ok) throw new Error(await res.text());
@@ -377,7 +388,29 @@ function buildEmail(filter: AlertFilter, rows: Article[], subject: string, intro
   return { text: text.join("\n"), html };
 }
 
-async function sendEmail(to: string, subject: string, text: string, html: string): Promise<void> {
+type EmailMeta = {
+  filter_id?: string;
+  email_kind?: string;
+  article_count?: number;
+  window_start?: string;
+  window_end?: string;
+};
+
+async function sendEmail(to: string, subject: string, text: string, html: string, meta: EmailMeta = {}): Promise<"sent" | "queued"> {
+  if (ALERT_EMAIL_DELIVERY !== "resend") {
+    await restPostMerge("alert_email_outbox", [{
+      filter_id: meta.filter_id || null,
+      email: to,
+      subject,
+      text_body: text,
+      html_body: html,
+      email_kind: meta.email_kind || null,
+      article_count: meta.article_count || 0,
+      window_start: meta.window_start || null,
+      window_end: meta.window_end || null,
+    }]);
+    return "queued";
+  }
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -387,6 +420,7 @@ async function sendEmail(to: string, subject: string, text: string, html: string
     body: JSON.stringify({ from: ALERT_EMAIL_FROM, to, subject, text, html }),
   });
   if (!res.ok) throw new Error(await res.text());
+  return "sent";
 }
 
 async function updateLastEmail(filter: AlertFilter, nowIso: string, count: number, kind: string): Promise<void> {
@@ -425,10 +459,16 @@ async function sendInitialTest(filter: AlertFilter, keywords: string[], nowIso: 
     `Mail de validation: voici les articles qui auraient correspondu sur ${periodLabel}.`,
     `Le filtre est actif, mais aucun article ne correspondait sur ${periodLabel}.`
   );
-  await sendEmail(filter.email, subject, email.text, email.html);
+  const delivery = await sendEmail(filter.email, subject, email.text, email.html, {
+    filter_id: filter.id,
+    email_kind: "test",
+    article_count: rows.length,
+    window_start: windowStart,
+    window_end: windowEnd,
+  });
   await restPatch("alert_filters", `id=eq.${q(filter.id)}`, { first_test_sent_at: nowIso, last_checked_at: nowIso });
-  await updateLastEmail(filter, nowIso, rows.length, "test");
-  await markPendingTests(filter.id, nowIso, "sent");
+  if (delivery === "sent") await updateLastEmail(filter, nowIso, rows.length, "test");
+  await markPendingTests(filter.id, nowIso, delivery);
   return true;
 }
 
@@ -499,8 +539,14 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
       const subjectLabel = filter.label || "Alerte Google News FR";
       const subject = `0 nouvel article - ${subjectLabel} - ${label}`;
       const email = buildEmail(filter, [], subject, `Récap minute sur la fenêtre complète: ${label}`, "Aucun article correspondant sur cette période.");
-      await sendEmail(filter.email, subject, email.text, email.html);
-      await updateLastEmail(filter, nowIso, 0, "minute");
+      const delivery = await sendEmail(filter.email, subject, email.text, email.html, {
+        filter_id: filter.id,
+        email_kind: "minute",
+        article_count: 0,
+        window_start: start,
+        window_end: end,
+      });
+      if (delivery === "sent") await updateLastEmail(filter, nowIso, 0, "minute");
       emptyMinuteEmails += 1;
     }
     return { filters: filters.length, emails: emptyMinuteEmails, skipped: "no_articles_in_due_windows", window_start: since, window_end: until };
@@ -534,11 +580,17 @@ async function processScheduled(now: Date, nowIso: string): Promise<Json> {
         const subjectLabel = filter.label || "Alerte Google News FR";
         const subject = `${fresh.length} nouvel article${fresh.length > 1 ? "s" : ""} - ${subjectLabel} - ${label}`;
         const email = buildEmail(filter, fresh, subject, `Articles détectés sur la fenêtre complète: ${label}`, "Aucun article correspondant sur cette période.");
-        await sendEmail(filter.email, subject, email.text, email.html);
+        const delivery = await sendEmail(filter.email, subject, email.text, email.html, {
+          filter_id: filter.id,
+          email_kind: kind,
+          article_count: fresh.length,
+          window_start: start,
+          window_end: end,
+        });
         if (!repeatEveryMinute) {
           await restPost("alert_deliveries", fresh.filter((a) => a.uid).map((a) => ({ filter_id: filter.id, article_uid: a.uid as string })));
         }
-        await updateLastEmail(filter, nowIso, fresh.length, kind);
+        if (delivery === "sent") await updateLastEmail(filter, nowIso, fresh.length, kind);
         emails += 1;
       }
     }

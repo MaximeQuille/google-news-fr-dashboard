@@ -181,19 +181,50 @@ def push_attempts(conn: sqlite3.Connection, supabase_url: str, service_key: str)
     print(f"Replaced attempts total: {total}")
 
 
+def update_dashboard_stats(conn: sqlite3.Connection, supabase_url: str, service_key: str):
+    total_articles, total_sources, first_article, last_article = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total_articles,
+            COUNT(DISTINCT NULLIF(source, '')) AS total_sources,
+            MIN(published) AS first_article,
+            MAX(published) AS last_article
+        FROM articles
+        """
+    ).fetchone()
+    payload = [{
+        "id": "main",
+        "total_articles": int(total_articles or 0),
+        "total_sources": int(total_sources or 0),
+        "first_article": first_article,
+        "last_article": last_article,
+    }]
+    url = f"{supabase_url}/rest/v1/dashboard_stats?on_conflict=id"
+    try:
+        request_json("POST", url, service_key, data=json.dumps(payload), headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        print(f"Dashboard stats updated: {total_articles} articles, {total_sources} sources")
+    except SystemExit as exc:
+        message = str(exc)
+        if "dashboard_stats" in message or "PGRST" in message:
+            print("Dashboard stats not updated: run supabase/alerts.sql once in Supabase, then relaunch sync.")
+            return
+        raise
+
+
 def push(db_path: Path):
     supabase_url = env("SUPABASE_URL")
     service_key = env("SUPABASE_SERVICE_ROLE_KEY")
     conn = app.init_db(db_path)
     push_articles(conn, supabase_url, service_key)
     push_attempts(conn, supabase_url, service_key)
+    update_dashboard_stats(conn, supabase_url, service_key)
     conn.close()
 
 
 def stats():
     supabase_url = env("SUPABASE_URL")
     service_key = env("SUPABASE_SERVICE_ROLE_KEY")
-    rows = request_json("GET", f"{supabase_url}/rest/v1/article_stats?select=total_articles,total_sources,first_article,last_article", service_key)
+    rows = request_json("GET", f"{supabase_url}/rest/v1/dashboard_stats?select=total_articles,total_sources,first_article,last_article,updated_at&id=eq.main", service_key)
     print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 

@@ -1732,7 +1732,7 @@ async def async_main(args):
         conn = init_db(db_path)
         previous_finished = latest_finished_at(conn)
         if previous_finished:
-            resume_start = floor_to_hour(previous_finished)
+            resume_start = floor_to_hour(previous_finished) - timedelta(hours=args.repair_last_hours)
             resume_end = floor_to_hour(now)
             if resume_end > resume_start:
                 start_dt = resume_start
@@ -1876,6 +1876,7 @@ def parse_args():
     p.add_argument("--summary-backfill-limit", type=int, default=1200, help="Nombre max d'anciennes requêtes à relire pour compléter les résumés.")
     p.add_argument("--backfill-summaries-only", action="store_true", help="Complète seulement les résumés puis régénère les exports.")
     p.add_argument("--no-resume-latest", dest="resume_latest", action="store_false", help="Ne reprend pas la dernière base existante.")
+    p.add_argument("--repair-last-hours", type=int, default=24, help="À chaque relance, rescanner aussi les N dernières heures complètes pour repêcher les trous sans doublons.")
     p.add_argument("--new-output", action="store_true", help="Force la création d'un nouveau dossier de sortie.")
     p.set_defaults(domain_search=True, include_topics=True, adaptive=True, local_combos=True, resume_latest=True, summary_backfill=True)
 
@@ -1888,6 +1889,8 @@ def parse_args():
         args.concurrency = 100
     if args.progress_every < 10:
         args.progress_every = 10
+    if args.repair_last_hours < 0:
+        args.repair_last_hours = 0
     return args
 
 
@@ -1898,7 +1901,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 

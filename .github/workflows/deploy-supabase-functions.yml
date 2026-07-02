@@ -25,14 +25,13 @@ jobs:
         id: config
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_CRON_SECRET: ${{ secrets.ALERT_CRON_SECRET }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ -n "$SUPABASE_ACCESS_TOKEN" ] && [ -n "$RESEND_API_KEY" ] && [ -n "$ALERT_CRON_SECRET" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+          if [ -n "$SUPABASE_ACCESS_TOKEN" ] && [ -n "$ALERT_CRON_SECRET" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Supabase function deployment skipped: missing SUPABASE_ACCESS_TOKEN, RESEND_API_KEY, ALERT_CRON_SECRET, or SUPABASE_SERVICE_ROLE_KEY."
+            echo "Supabase function deployment skipped: missing SUPABASE_ACCESS_TOKEN, ALERT_CRON_SECRET, or SUPABASE_SERVICE_ROLE_KEY."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -55,6 +54,7 @@ jobs:
             SUPABASE_SERVICE_ROLE_KEY="${SUPABASE_SERVICE_ROLE_KEY}" \
             RESEND_API_KEY="${RESEND_API_KEY}" \
             ALERT_EMAIL_FROM="${ALERT_EMAIL_FROM:-Google News FR <onboarding@resend.dev>}" \
+            ALERT_EMAIL_DELIVERY="queue" \
             ALERT_CRON_SECRET="${ALERT_CRON_SECRET}" \
             --project-ref sopvxssamctizjbbtsrl
 

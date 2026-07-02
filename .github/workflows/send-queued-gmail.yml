@@ -1,19 +1,21 @@
-name: Send requested alert tests
+name: Send queued Gmail alerts
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: google-news-alert-tests
+  group: google-news-queued-gmail
   cancel-in-progress: false
 
 jobs:
-  send-tests:
+  send:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout main branch
@@ -26,19 +28,6 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install requests
-
-      - name: Process pending tests in Supabase
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          ALERT_CRON_SECRET: ${{ secrets.ALERT_CRON_SECRET }}
-        run: |
-          curl -fsS -X POST "${SUPABASE_URL%/}/functions/v1/process-alerts" \
-            -H "Content-Type: application/json" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
-            -H "x-alert-cron-secret: ${ALERT_CRON_SECRET}" \
-            --data '{"action":"tests"}'
 
       - name: Send queued emails with Gmail
         env:

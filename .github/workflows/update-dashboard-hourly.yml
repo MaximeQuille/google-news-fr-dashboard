@@ -63,6 +63,17 @@ jobs:
             -H "x-alert-cron-secret: ${ALERT_CRON_SECRET}" \
             --data '{"action":"all"}'
 
+      - name: Send queued emails with Gmail
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: python scripts/send_queued_gmail.py --limit 200
+
       - name: Prepare Supabase static site
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
